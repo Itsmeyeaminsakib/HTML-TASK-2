@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Open Mobile Camera</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{margin:0;padding:16px;display:flex;flex-direction:column;gap:12px;align-items:center;min-height:100vh;background:#f7f8fb;color:#111}
+    header{width:100%;max-width:900px;display:flex;justify-content:space-between;align-items:center}
+    h1{font-size:18px;margin:0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    button, a.linklike{background:#0b76ff;color:white;border:none;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:600}
+    button.secondary{background:#e5e7eb;color:#111}
+    video{width:100%;max-width:900px;border-radius:12px;background:#000;height:60vh;object-fit:cover}
+    .toolbar{display:flex;gap:8px;justify-content:center;width:100%;max-width:900px}
+    .bottom-row{display:flex;gap:8px;align-items:center}
+    #snapshots{display:flex;gap:8px;flex-wrap:wrap;max-width:900px}
+    .snap{width:96px;height:72px;object-fit:cover;border-radius:6px;border:1px solid #ddd}
+    .hint{font-size:13px;color:#555}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Open Mobile Camera</h1>
+    <div class="controls">
+      <!-- "Link" that acts like a clickable action -->
+      <a id="openCameraLink" class="linklike" href="#" role="button">Open Camera</a>
+      <button id="stopBtn" class="secondary" disabled>Stop</button>
+    </div>
+  </header>
+
+  <main>
+    <video id="video" autoplay playsinline></video>
+
+    <div class="toolbar" aria-hidden>
+      <select id="deviceSelect" style="padding:8px;border-radius:8px">
+        <option value="">Select camera (if available)</option>
+      </select>
+      <button id="switchBtn">Switch (front/back)</button>
+      <button id="fullscreenBtn">Fullscreen</button>
+      <button id="snapBtn">Snapshot</button>
+      <a id="downloadLink" style="display:none" download="snapshot.png">Download last snapshot</a>
+    </div>
+
+    <p class="hint">Tip: allow the site to use your camera when prompted. Page must be served over HTTPS or opened from <code>localhost</code>.</p>
+
+    <div id="snapshots"></div>
+  </main>
+
+  <script>
+    const openCameraLink = document.getElementById('openCameraLink');
+    const stopBtn = document.getElementById('stopBtn');
+    const video = document.getElementById('video');
+    const deviceSelect = document.getElementById('deviceSelect');
+    const switchBtn = document.getElementById('switchBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const snapBtn = document.getElementById('snapBtn');
+    const snapshots = document.getElementById('snapshots');
+    const downloadLink = document.getElementById('downloadLink');
+
+    let currentStream = null;
+    let currentDeviceId = null;
+    let prefersEnvironment = true; // try back camera first on mobile
+
+    async function getCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        deviceSelect.innerHTML = '<option value="">(use default)</option>';
+        cams.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Camera ${deviceSelect.length+1}`;
+          deviceSelect.appendChild(opt);
+        });
+      } catch (e) {
+        console.warn('enumerateDevices failed', e);
+      }
+    }
+
+    async function startCamera(deviceId = null, preferEnv = true) {
+      stopStream();
+      const constraints = {
+        audio: false,
+        video: deviceId ? {deviceId:{exact:deviceId}} : {facingMode: preferEnv ? {exact:'environment'} : 'user'}
+      };
+
+      // If deviceId is null, use a more forgiving facingMode setting for cross-browser:
+      if (!deviceId) constraints.video = preferEnv ? {facingMode: {ideal: 'environment'}} : {facingMode: {ideal: 'user'}};
+
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        stopBtn.disabled = false;
+        openCameraLink.textContent = 'Camera Opened';
+        // After opening, populate devices (labels appear only after permission)
+        await getCameras();
+        // If deviceSelect has a chosen value, reflect it
+        if (deviceId) deviceSelect.value = deviceId;
+      } catch (err) {
+        alert('Unable to access camera: ' + (err.message || err));
+        console.error(err);
+      }
+    }
+
+    function stopStream() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+        video.srcObject = null;
+        stopBtn.disabled = true;
+        openCameraLink.textContent = 'Open Camera';
+      }
+    }
+
+    openCameraLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      // Start with deviceSelect selection if any, otherwise try environment-facing
+      const sel = deviceSelect.value || null;
+      startCamera(sel, prefersEnvironment);
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopStream();
+    });
+
+    deviceSelect.addEventListener('change', () => {
+      const id = deviceSelect.value || null;
+      startCamera(id, false);
+    });
+
+    switchBtn.addEventListener('click', async () => {
+      // toggles facing preference and restarts
+      prefersEnvironment = !prefersEnvironment;
+      // If a specific device is selected, clear selection to use facingMode
+      deviceSelect.value = '';
+      startCamera(null, prefersEnvironment);
+    });
+
+    fullscreenBtn.addEventListener('click', async () => {
+      try {
+        if (video.requestFullscreen) await video.requestFullscreen();
+        else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS attempt
+      } catch (e) {
+        console.warn('Fullscreen failed', e);
+      }
+    });
+
+    snapBtn.addEventListener('click', () => {
+      if (!currentStream) {
+        alert('Camera not started yet.');
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/png');
+      const img = document.createElement('img');
+      img.src = dataUrl;
+      img.className = 'snap';
+      snapshots.prepend(img);
+      downloadLink.href = dataUrl;
+      downloadLink.style.display = 'inline-block';
+    });
+
+    // On load: try to populate cameras (may require permission)
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      getCameras();
+    } else {
+      alert('Your browser does not support camera access via getUserMedia.');
+    }
+
+    // Clean up on page unload
+    window.addEventListener('beforeunload', stopStream);
+  </script>
+</body>
+</html>
